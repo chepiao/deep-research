@@ -6,14 +6,25 @@ import {
   wrapLanguageModel,
 } from 'ai';
 import { getEncoding } from 'js-tiktoken';
+import { ProxyAgent, fetch as undiciFetch } from 'undici';
 
 import { RecursiveCharacterTextSplitter } from './text-splitter';
+
+// Proxy support — uses undici fetch + ProxyAgent so HTTPS through an HTTP proxy works
+const proxyAgent = process.env.HTTPS_PROXY
+  ? new ProxyAgent(process.env.HTTPS_PROXY)
+  : undefined;
+const customFetch = proxyAgent
+  ? (url: RequestInfo | URL, init?: RequestInit) =>
+      undiciFetch(url, { ...init, dispatcher: proxyAgent } as any)
+  : undefined;
 
 // Providers
 const openai = process.env.OPENAI_KEY
   ? createOpenAI({
       apiKey: process.env.OPENAI_KEY,
       baseURL: process.env.OPENAI_ENDPOINT || 'https://api.openai.com/v1',
+      fetch: customFetch,
     })
   : undefined;
 
@@ -24,9 +35,7 @@ const fireworks = process.env.FIREWORKS_KEY
   : undefined;
 
 const customModel = process.env.CUSTOM_MODEL
-  ? openai?.(process.env.CUSTOM_MODEL, {
-      structuredOutputs: true,
-    })
+  ? openai?.(process.env.CUSTOM_MODEL)
   : undefined;
 
 // Models
