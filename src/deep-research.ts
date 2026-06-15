@@ -1,4 +1,5 @@
 import FirecrawlApp, { SearchResponse } from '@mendable/firecrawl-js';
+import { streamText } from 'ai';
 import { compact } from 'lodash-es';
 import pLimit from 'p-limit';
 import { z } from 'zod';
@@ -129,20 +130,31 @@ export async function writeFinalReport({
     .map(learning => `<learning>\n${learning}\n</learning>`)
     .join('\n');
 
-  const res = await safeGenerateObject({
+  const stream = await streamText({
     model: getModel(),
     system: systemPrompt(),
     prompt: trimPrompt(
-      `Given the following prompt from the user, write a final report on the topic using the learnings from research. Make it as as detailed as possible, aim for 3 or more pages, include ALL the learnings from research:\n\n<prompt>${prompt}</prompt>\n\nHere are all the learnings from previous research:\n\n<learnings>\n${learningsString}\n</learnings>`,
+      `Given the following prompt from the user, write a final report on the topic using the learnings from research. Make it as as detailed as possible, aim for 3 or more pages, include ALL the learnings from research. Output the report in Markdown format.\n\n<prompt>${prompt}</prompt>\n\nHere are all the learnings from previous research:\n\n<learnings>\n${learningsString}\n</learnings>`,
     ),
-    schema: z.object({
-      reportMarkdown: z.string().describe('Final report on the topic in Markdown'),
-    }),
   });
+
+  // Consume the stream with progress logging to detect stalls
+  let report = '';
+  let lastTokenTime = Date.now();
+  for await (const chunk of stream.textStream) {
+    report += chunk;
+    const now = Date.now();
+    if (now - lastTokenTime > 5000) {
+      log(`[report] still generating... (${report.length} chars)`);
+    }
+    lastTokenTime = now;
+  }
+
+  log(`[report] stream finished, ${report.length} chars total`);
 
   // Append the visited URLs section to the report
   const urlsSection = `\n\n## Sources\n\n${visitedUrls.map(url => `- ${url}`).join('\n')}`;
-  return res.object.reportMarkdown + urlsSection;
+  return report + urlsSection;
 }
 
 export async function writeFinalAnswer({

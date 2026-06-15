@@ -109,45 +109,88 @@ export function trimPrompt(
 }
 
 /**
- * Wrapper around generateObject that handles models returning double-serialized
- * JSON strings (e.g. deepseek-v4-pro). Falls back to manual JSON.parse when the
- * SDK's schema validation fails due to the response being a string instead of object.
+ * Wrapper around generateObject that handles models with poor structured output
+ * support (e.g. deepseek-v4-pro). Retries on failure and attempts manual
+ * JSON.parse for double-serialized or malformed responses.
  */
 export async function safeGenerateObject<T>(
   params: Parameters<typeof generateObject>[0],
+  maxRetries = 2,
 ): Promise<GenerateObjectResult<T>> {
-  try {
-    return await generateObject(params) as GenerateObjectResult<T>;
-  } catch (e: any) {
-    // Only handle the specific double-serialization issue
-    if (e?.name !== 'AI_NoObjectGeneratedError') {
-      throw e;
-    }
-    const raw = e?.text;
-    if (typeof raw !== 'string') {
-      throw e;
-    }
-    // Try to unwrap: the text might be a JSON string containing another JSON string
-    let parsed: any;
+  let lastError: any;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      parsed = JSON.parse(raw);
-      // If parsed is still a string, parse one more level
-      if (typeof parsed === 'string') {
-        parsed = JSON.parse(parsed);
+      return (await generateObject(params)) as GenerateObjectResult<T>;
+    } catch (e: any) {
+      lastError = e;
+
+      if (e?.name !== 'AI_NoObjectGeneratedError') {
+        throw e;
       }
-    } catch {
-      throw e;
+
+      // Try manual JSON parse recovery from e.text (double-serialization case)
+      const recovered = tryRecoverFromText<T>(e, params);
+      if (recovered !== null) {
+        return recovered;
+      }
+
+      // If we have retries left, try again; otherwise throw
+      if (attempt < maxRetries) {
+        continue;
+      }
     }
-    // Validate against schema if available
-    const schema = (params as any).schema;
-    if (schema?.parse) {
-      parsed = schema.parse(parsed);
-    }
-    return {
-      object: parsed as T,
-      finishReason: 'stop',
-      usage: e?.usage ?? { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-      response: e?.response ?? {},
-    } as GenerateObjectResult<T>;
   }
+
+  throw lastError;
+}
+
+/**
+ * Attempt to recover a valid object from AI_NoObjectGeneratedError by manually
+ * parsing the raw text. Handles:
+ * - Double-serialized JSON (string containing JSON string)
+ * - Model returning JSON as a plain string instead of object
+ * Returns null if recovery is not possible.
+ */
+function tryRecoverFromText<T>(
+  e: any,
+  params: Parameters<typeof generateObject>[0],
+): GenerateObjectResult<T> | null {
+  const raw = e?.text;
+  if (typeof raw !== 'string') {
+    return null;
+  }
+
+  let parsed: any;
+  try {
+    parsed = JSON.parse(raw);
+    // If parsed is still a string, parse one more level
+    if (typeof parsed === 'string') {
+      parsed = JSON.parse(parsed);
+    }
+  } catch {
+    return null;
+  }
+
+  // Only accept if parsed is a non-null object
+  if (typeof parsed !== 'object' || parsed === null) {
+    return null;
+  }
+
+  // Try schema validation with safeParse — don't throw on mismatch
+  const schema = (params as any).schema;
+  if (schema?.safeParse) {
+    const result = schema.safeParse(parsed);
+    if (!result.success) {
+      return null;
+    }
+    parsed = result.data;
+  }
+
+  return {
+    object: parsed as T,
+    finishReason: 'stop',
+    usage: e?.usage ?? { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+    response: e?.response ?? {},
+  } as GenerateObjectResult<T>;
 }

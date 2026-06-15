@@ -94,11 +94,13 @@ ${followUpQuestions.map((q: string, i: number) => `Q: ${q}\nA: ${answers[i]}`).j
   log('Writing final report...');
 
   if (isReport) {
+    log('Writing final report...');
     const report = await writeFinalReport({
       prompt: combinedQuery,
       learnings,
       visitedUrls,
     });
+    log('Report generation complete, writing to file...');
 
     await fs.writeFile('report.md', report, 'utf-8');
     console.log(`\n\nFinal Report:\n\n${report}`);
