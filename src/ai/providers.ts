@@ -2,6 +2,8 @@ import { createFireworks } from '@ai-sdk/fireworks';
 import { createOpenAI } from '@ai-sdk/openai';
 import {
   extractReasoningMiddleware,
+  generateObject,
+  GenerateObjectResult,
   LanguageModelV1,
   wrapLanguageModel,
 } from 'ai';
@@ -104,4 +106,48 @@ export function trimPrompt(
 
   // recursively trim until the prompt is within the context size
   return trimPrompt(trimmedPrompt, contextSize);
+}
+
+/**
+ * Wrapper around generateObject that handles models returning double-serialized
+ * JSON strings (e.g. deepseek-v4-pro). Falls back to manual JSON.parse when the
+ * SDK's schema validation fails due to the response being a string instead of object.
+ */
+export async function safeGenerateObject<T>(
+  params: Parameters<typeof generateObject>[0],
+): Promise<GenerateObjectResult<T>> {
+  try {
+    return await generateObject(params) as GenerateObjectResult<T>;
+  } catch (e: any) {
+    // Only handle the specific double-serialization issue
+    if (e?.name !== 'AI_NoObjectGeneratedError') {
+      throw e;
+    }
+    const raw = e?.text;
+    if (typeof raw !== 'string') {
+      throw e;
+    }
+    // Try to unwrap: the text might be a JSON string containing another JSON string
+    let parsed: any;
+    try {
+      parsed = JSON.parse(raw);
+      // If parsed is still a string, parse one more level
+      if (typeof parsed === 'string') {
+        parsed = JSON.parse(parsed);
+      }
+    } catch {
+      throw e;
+    }
+    // Validate against schema if available
+    const schema = (params as any).schema;
+    if (schema?.parse) {
+      parsed = schema.parse(parsed);
+    }
+    return {
+      object: parsed as T,
+      finishReason: 'stop',
+      usage: e?.usage ?? { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      response: e?.response ?? {},
+    } as GenerateObjectResult<T>;
+  }
 }
