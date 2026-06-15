@@ -168,20 +168,19 @@ export async function writeFinalAnswer({
     .map(learning => `<learning>\n${learning}\n</learning>`)
     .join('\n');
 
-  const res = await safeGenerateObject({
+  const stream = await streamText({
     model: getModel(),
     system: systemPrompt(),
     prompt: trimPrompt(
       `Given the following prompt from the user, write a final answer on the topic using the learnings from research. Follow the format specified in the prompt. Do not yap or babble or include any other text than the answer besides the format specified in the prompt. Keep the answer as concise as possible - usually it should be just a few words or maximum a sentence. Try to follow the format specified in the prompt (for example, if the prompt is using Latex, the answer should be in Latex. If the prompt gives multiple answer choices, the answer should be one of the choices).\n\n<prompt>${prompt}</prompt>\n\nHere are all the learnings from research on the topic that you can use to help answer the prompt:\n\n<learnings>\n${learningsString}\n</learnings>`,
     ),
-    schema: z.object({
-      exactAnswer: z
-        .string()
-        .describe('The final answer, make it short and concise, just the answer, no other text'),
-    }),
   });
 
-  return res.object.exactAnswer;
+  let answer = '';
+  for await (const chunk of stream.textStream) {
+    answer += chunk;
+  }
+  return answer.trim();
 }
 
 export async function deepResearch({
